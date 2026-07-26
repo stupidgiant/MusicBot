@@ -6,6 +6,7 @@ from telegram import Update, InlineQueryResultArticle, InputTextMessageContent, 
 from telegram.ext import Application, InlineQueryHandler, CommandHandler, ContextTypes
 import requests
 from flask import Flask, request
+import asyncio
 
 load_dotenv()
 
@@ -26,6 +27,7 @@ logger.info(f"Webhook URL: {WEBHOOK_URL}")
 ODESLI_API = "https://api.song.link/v1-alpha.1/links"
 
 app = Flask(__name__)
+application = None
 
 
 def convert_song_link(url):
@@ -118,7 +120,10 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         
     except Exception as e:
         logger.error(f"❌ Inline error: {e}", exc_info=True)
-        await update.inline_query.answer([], cache_time=0)
+        try:
+            await update.inline_query.answer([], cache_time=0)
+        except:
+            pass
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -140,14 +145,16 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 @app.route("/webhook", methods=["POST"])
-async def webhook():
+def webhook():
     """Webhook endpoint"""
     try:
         update_data = request.get_json()
-        logger.info(f"Webhook received: {update_data}")
+        logger.debug(f"Webhook received")
         
         update = Update.de_json(update_data, application.bot)
-        await application.process_update(update)
+        
+        # Process update in async context
+        asyncio.run(application.process_update(update))
         
         return "ok"
     except Exception as e:
@@ -161,8 +168,8 @@ def health():
     return "ok"
 
 
-async def post_init(application: Application) -> None:
-    """Set webhook and commands after startup"""
+async def setup_bot():
+    """Setup bot commands and webhook"""
     logger.info("Setting up bot...")
     
     # Set commands
@@ -179,35 +186,23 @@ async def post_init(application: Application) -> None:
     logger.info(f"✅ Webhook set: {webhook_url}")
 
 
-async def post_stop(application: Application) -> None:
-    """Cleanup"""
-    logger.info("Bot stopping...")
+# Initialize bot on startup
+if not TELEGRAM_BOT_TOKEN:
+    logger.error("❌ No token!")
+    raise ValueError("TELEGRAM_BOT_TOKEN required")
 
+logger.info("🚀 Starting SharingTrack Bot...")
 
-def main() -> None:
-    """Start the bot"""
-    global application
-    
-    if not TELEGRAM_BOT_TOKEN:
-        logger.error("❌ No token!")
-        raise ValueError("TELEGRAM_BOT_TOKEN required")
-    
-    logger.info("🚀 Starting SharingTrack Bot...")
-    
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    application.add_handler(InlineQueryHandler(inline_query))
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("test", test))
-    
-    application.post_init = post_init
-    application.post_stop = post_stop
-    
-    logger.info("🎵 Bot configured")
-    
-    # Run Flask with bot
-    app.run(host="0.0.0.0", port=PORT, debug=False)
+application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
+application.add_handler(InlineQueryHandler(inline_query))
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("test", test))
 
-if __name__ == "__main__":
-    main()
+# Setup bot
+try:
+    asyncio.run(setup_bot())
+except Exception as e:
+    logger.error(f"Setup error: {e}", exc_info=True)
+
+logger.info("🎵 Bot configured and ready")
