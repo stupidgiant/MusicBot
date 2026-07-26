@@ -12,7 +12,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TELEGRAM_BOT_TOKEN = os.getenv("8895183093:AAHKyVBtVJQ9Ca7xlKj-gq0Aa7-yb85Iiz8")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # Odesli API for cross-platform song conversion
 ODESLI_API = "https://api.song.link/v1-alpha.1/links"
