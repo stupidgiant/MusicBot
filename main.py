@@ -3,7 +3,7 @@ import logging
 import sys
 from dotenv import load_dotenv
 from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
-from telegram.ext import Application, InlineQueryHandler, CommandHandler, ContextTypes
+from telegram.ext import Application, InlineQueryHandler, CommandHandler, MessageHandler, ContextTypes, filters
 import requests
 
 load_dotenv()
@@ -60,6 +60,38 @@ def convert_song_link(url):
         return None, None
 
 
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle regular text messages with links"""
+    try:
+        text = update.message.text.strip()
+        logger.info(f"📨 Message: {text}")
+        
+        if not text:
+            return
+        
+        is_spotify = "spotify.com" in text
+        is_apple = "music.apple.com" in text
+        
+        if not (is_spotify or is_apple):
+            await update.message.reply_text("🎵 Send me a Spotify or Apple Music link!")
+            return
+        
+        converted_url, platform = convert_song_link(text)
+        
+        if not converted_url:
+            await update.message.reply_text("❌ Couldn't convert this link. Make sure it's valid.")
+        else:
+            target = "Apple Music" if is_spotify else "Spotify"
+            await update.message.reply_text(
+                f"🎵 **{target}**\n{converted_url}",
+                parse_mode="Markdown"
+            )
+        
+    except Exception as e:
+        logger.error(f"❌ Message handler error: {e}", exc_info=True)
+        await update.message.reply_text("❌ Error processing message")
+
+
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle inline queries"""
     try:
@@ -75,24 +107,27 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         is_apple = "music.apple.com" in query
         
         if not (is_spotify or is_apple):
+            logger.info("Not a music link, returning empty")
             await update.inline_query.answer([], cache_time=0)
             return
         
         converted_url, platform = convert_song_link(query)
         
         if not converted_url:
+            logger.warning(f"Conversion failed for: {query}")
             results = [
                 InlineQueryResultArticle(
                     id="error",
                     title="❌ Could not convert",
-                    description="Invalid link",
+                    description="Invalid or unsupported link",
                     input_message_content=InputTextMessageContent(
-                        message_text="❌ Couldn't convert."
+                        message_text="❌ Couldn't convert this link."
                     ),
                 )
             ]
         else:
             target = "Apple Music" if is_spotify else "Spotify"
+            logger.info(f"✅ Inline conversion success: {target}")
             results = [
                 InlineQueryResultArticle(
                     id="converted",
@@ -108,14 +143,18 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.inline_query.answer(results, cache_time=300)
         
     except Exception as e:
-        logger.error(f"❌ Error: {e}", exc_info=True)
+        logger.error(f"❌ Inline query error: {e}", exc_info=True)
+        await update.inline_query.answer([], cache_time=0)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Start command"""
     await update.message.reply_text(
         "🎵 **SharingTrack Bot**\n\n"
-        "Use me inline: @SharingTrackbot [link]"
+        "**Two ways to use me:**\n\n"
+        "1️⃣ **Send directly** - Send me a Spotify or Apple Music link\n"
+        "2️⃣ **Inline** - Type `@SharingTrackbot [link]` in any chat",
+        parse_mode="Markdown"
     )
 
 
@@ -141,9 +180,11 @@ def main() -> None:
     
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
-    app.add_handler(InlineQueryHandler(inline_query))
+    # Handlers (order matters - more specific first)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("test", test))
+    app.add_handler(InlineQueryHandler(inline_query))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     app.post_init = post_init
     
