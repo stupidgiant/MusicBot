@@ -423,7 +423,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 )
             ]
         
-        await update.inline_query.answer(results, cache_time=300)
+        await update.inline_query.answer(results, cache_time=0)
         
     except Exception as e:
         logger.error(f"❌ Inline query error: {e}", exc_info=True)
