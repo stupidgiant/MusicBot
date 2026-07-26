@@ -2,6 +2,7 @@ import os
 import logging
 import sys
 import json
+import re
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
@@ -167,7 +168,8 @@ class OdesliClient:
         try:
             link_by_platform = data.get("linksByPlatform", {})
             
-            if "spotify.com" in url and "appleMusic" in link_by_platform:
+            is_spotify = "spotify.com" in url or data.get("entityUniqueId", "").startswith("SPOTIFY_")
+            if is_spotify and "appleMusic" in link_by_platform:
                 result = link_by_platform["appleMusic"]["url"]
                 logger.info("✅ Spotify → Apple Music")
                 return result, "Apple Music"
@@ -184,11 +186,16 @@ class OdesliClient:
             return None, None
 
 
+MUSIC_URL_RE = re.compile(r"https?://[^\s<>()]+")
+
+def extract_music_url(text: str) -> Optional[str]:
+    """Extract a URL from text that may also mention the bot."""
+    match = MUSIC_URL_RE.search(text)
+    return match.group(0).rstrip(".,!?;:)]}") if match else None
+
 # ============ UTILITIES ============
 def clean_music_url(url: str) -> str:
-    """Remove query parameters from music links"""
-    if "?" in url:
-        url = url.split("?")[0]
+    """Normalize a URL without removing Apple Music's required ?i= song ID."""
     url = url.rstrip("/")
     logger.debug(f"🧹 Cleaned URL: {url}")
     return url
@@ -205,8 +212,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if not text:
             return
         
-        is_spotify = "spotify.com" in text
-        is_apple = "music.apple.com" in text
+        url = extract_music_url(text)
+        is_spotify = bool(url and ("spotify.com" in url or "spotify.link" in url))
+        is_apple = bool(url and "music.apple.com" in url)
         
         if not (is_spotify or is_apple):
             await update.message.reply_text("🎵 Send me a Spotify or Apple Music link!")
@@ -214,7 +222,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
         await update.message.reply_text("⏳ Converting...")
         
-        url = clean_music_url(text)
+        url = clean_music_url(url)
         async with OdesliClient() as client:
             converted_url, platform = await client.convert(url)
         
@@ -253,14 +261,15 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await update.inline_query.answer([], cache_time=0)
             return
         
-        is_spotify = "spotify.com" in query
-        is_apple = "music.apple.com" in query
+        url = extract_music_url(query)
+        is_spotify = bool(url and ("spotify.com" in url or "spotify.link" in url))
+        is_apple = bool(url and "music.apple.com" in url)
         
         if not (is_spotify or is_apple):
             await update.inline_query.answer([], cache_time=0)
             return
         
-        url = clean_music_url(query)
+        url = clean_music_url(url)
         async with OdesliClient() as client:
             converted_url, platform = await client.convert(url)
         
@@ -334,7 +343,7 @@ async def post_init(app: Application) -> None:
     """Initialize bot on startup"""
     logger.info("🧹 Cleaning up old webhook...")
     try:
-        await app.bot.delete_webhook(drop_pending_updates=True)
+        await app.bot.delete_webhook(drop_pending_updates=False)
         logger.info("✅ Webhook deleted, polling mode ready")
     except Exception as e:
         logger.error(f"Error deleting webhook: {e}")
