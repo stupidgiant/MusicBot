@@ -1,20 +1,23 @@
 import os
 import logging
+import sys
 from dotenv import load_dotenv
 from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
-from telegram.ext import Application, InlineQueryHandler, ContextTypes
+from telegram.ext import Application, InlineQueryHandler, CommandHandler, ContextTypes
 import requests
 
 load_dotenv()
 
-# Set up logging
+# Set up logging - output to stdout for Railway
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
 )
 logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+logger.info(f"Token loaded: {bool(TELEGRAM_BOT_TOKEN)}")
 
 # Odesli API for cross-platform song conversion
 ODESLI_API = "https://api.song.link/v1-alpha.1/links"
@@ -23,10 +26,10 @@ ODESLI_API = "https://api.song.link/v1-alpha.1/links"
 def convert_song_link(url):
     """
     Convert song link using Odesli API
-    Returns the converted link or None if failed
+    Returns tuple: (converted_url, platform_name)
     """
     try:
-        logger.info(f"Converting URL: {url}")
+        logger.info(f"🔄 Converting URL: {url}")
         response = requests.get(
             ODESLI_API,
             params={
@@ -36,29 +39,34 @@ def convert_song_link(url):
             timeout=10
         )
         
-        logger.info(f"Odesli API response status: {response.status_code}")
+        logger.info(f"Odesli response status: {response.status_code}")
         
         if response.status_code == 200:
             data = response.json()
+            logger.debug(f"Odesli response: {data}")
+            
             link_by_platform = data.get("linksByPlatform", {})
+            logger.info(f"Available platforms: {list(link_by_platform.keys())}")
             
             # If it's Spotify, convert to Apple Music
-            if "spotify" in url and "appleMusic" in link_by_platform:
-                converted = link_by_platform["appleMusic"]["url"]
-                logger.info(f"Converted Spotify to Apple Music: {converted}")
-                return converted, "appleMusic"
+            if "spotify.com" in url:
+                if "appleMusic" in link_by_platform:
+                    converted = link_by_platform["appleMusic"]["url"]
+                    logger.info(f"✅ Converted Spotify → Apple Music")
+                    return converted, "Apple Music"
             
             # If it's Apple Music, convert to Spotify
-            elif "music.apple.com" in url and "spotify" in link_by_platform:
-                converted = link_by_platform["spotify"]["url"]
-                logger.info(f"Converted Apple Music to Spotify: {converted}")
-                return converted, "spotify"
+            elif "music.apple.com" in url:
+                if "spotify" in link_by_platform:
+                    converted = link_by_platform["spotify"]["url"]
+                    logger.info(f"✅ Converted Apple Music → Spotify")
+                    return converted, "Spotify"
         
-        logger.warning(f"No conversion available for URL")
+        logger.warning(f"❌ No conversion available - Status: {response.status_code}")
         return None, None
         
     except Exception as e:
-        logger.error(f"Error converting song: {e}", exc_info=True)
+        logger.error(f"❌ Error converting: {e}", exc_info=True)
         return None, None
 
 
@@ -66,19 +74,23 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Handle inline queries from users"""
     try:
         query = update.inline_query.query.strip()
+        query_id = update.inline_query.id
+        
+        logger.info(f"📥 Inline query received (ID: {query_id}): '{query}'")
         
         if not query:
+            logger.info("Query empty, returning no results")
             await update.inline_query.answer([], cache_time=0)
             return
-        
-        logger.info(f"Inline query received: {query}")
         
         # Check if it's a Spotify or Apple Music link
         is_spotify = "spotify.com" in query
         is_apple = "music.apple.com" in query
         
+        logger.info(f"Is Spotify: {is_spotify}, Is Apple: {is_apple}")
+        
         if not (is_spotify or is_apple):
-            logger.info("Query is not a Spotify or Apple Music link")
+            logger.info("Not a music link, returning no results")
             await update.inline_query.answer([], cache_time=0)
             return
         
@@ -86,66 +98,89 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         converted_url, platform = convert_song_link(query)
         
         if not converted_url:
-            logger.warning("Failed to convert link")
+            logger.warning("Conversion failed, returning error result")
             results = [
                 InlineQueryResultArticle(
                     id="error",
-                    title="❌ Could not convert link",
-                    description="Make sure it's a valid Spotify or Apple Music link",
+                    title="❌ Could not convert",
+                    description="Try a valid Spotify or Apple Music link",
                     input_message_content=InputTextMessageContent(
-                        message_text="Sorry, I couldn't convert that link. Try a valid Spotify or Apple Music URL."
+                        message_text="❌ Couldn't convert that link. Make sure it's a valid Spotify or Apple Music URL."
                     ),
                 )
             ]
         else:
-            target_display = "Apple Music" if is_spotify else "Spotify"
+            logger.info(f"Conversion successful! Returning result")
+            target = "Apple Music" if is_spotify else "Spotify"
             results = [
                 InlineQueryResultArticle(
                     id="converted",
-                    title=f"🎵 {target_display}",
-                    description="Click to share the converted link",
+                    title=f"🎵 Open on {target}",
+                    description="Click to share this link",
                     input_message_content=InputTextMessageContent(
-                        message_text=f"🎵 **{target_display}:**\n{converted_url}"
+                        message_text=f"🎵 **{target}:**\n{converted_url}"
                     ),
                     url=converted_url,
                 )
             ]
         
-        await update.inline_query.answer(results, cache_time=60)
-        logger.info(f"Answered inline query with {len(results)} result(s)")
+        logger.info(f"Answering with {len(results)} result(s)")
+        await update.inline_query.answer(results, cache_time=300)
         
     except Exception as e:
-        logger.error(f"Error in inline_query handler: {e}", exc_info=True)
-        await update.inline_query.answer([], cache_time=0)
+        logger.error(f"❌ Error in inline_query: {e}", exc_info=True)
+        try:
+            await update.inline_query.answer([], cache_time=0)
+        except:
+            pass
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send a message when the command /start is issued."""
+    """Send a message when /start is issued"""
+    logger.info("Start command received")
+    text = (
+        "🎵 **SharingTrack Bot**\n\n"
+        "Convert between Spotify and Apple Music!\n\n"
+        "**How to use:**\n"
+        "Type in any chat:\n"
+        "@SharingTrackbot https://open.spotify.com/track/...\n\n"
+        "Or:\n"
+        "@SharingTrackbot https://music.apple.com/...\n\n"
+        "I'll instantly convert it! 🎶"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Test command"""
+    logger.info("Test command received")
     await update.message.reply_text(
-        "🎵 MusicBot - Convert between Spotify and Apple Music!\n\n"
-        "Use me inline:\n"
-        "@MusicBot spotify_link\n"
-        "@MusicBot apple_music_link\n\n"
-        "I'll convert it to the other platform!"
+        "✅ Bot is working!\n\n"
+        "Try using me inline:\n"
+        "@SharingTrackbot [spotify_link]\n"
+        "@SharingTrackbot [apple_music_link]"
     )
 
 
 def main() -> None:
     """Start the bot"""
     if not TELEGRAM_BOT_TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN not set in environment variables")
+        logger.error("❌ TELEGRAM_BOT_TOKEN not set!")
         raise ValueError("TELEGRAM_BOT_TOKEN not set in environment variables")
     
-    logger.info(f"Bot token found: {TELEGRAM_BOT_TOKEN[:10]}...")
+    logger.info(f"✅ Token found: {TELEGRAM_BOT_TOKEN[:20]}...")
+    logger.info("🤖 Starting SharingTrack Bot...")
     
     # Create the Application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
     # Register handlers
     application.add_handler(InlineQueryHandler(inline_query))
-    application.add_handler(application.add_handler(__import__("telegram.ext").CommandHandler("start", start)))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("test", test))
     
-    logger.info("🤖 Bot started and polling...")
+    logger.info("✅ Handlers registered")
+    logger.info("🎵 Bot is running and polling...")
     
     # Start the Bot
     application.run_polling(allowed_updates=Update.ALL_TYPES)
