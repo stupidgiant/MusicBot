@@ -21,6 +21,9 @@ logging.basicConfig(
     stream=sys.stdout
 )
 logger = logging.getLogger(__name__)
+# Avoid logging request URLs because Telegram embeds the bot token in its API URL.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # File logging for errors
 error_handler = logging.FileHandler('errors.log')
