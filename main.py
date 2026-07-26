@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import Application, InlineQueryHandler, CommandHandler, MessageHandler, ContextTypes, filters
 import requests
+from urllib.parse import urlparse, parse_qs
 
 load_dotenv()
 
@@ -26,9 +27,23 @@ logger.info(f"✅ Token loaded")
 ODESLI_API = "https://api.song.link/v1-alpha.1/links"
 
 
+def clean_music_url(url):
+    """Remove query parameters from music links"""
+    # Remove everything after ? to clean the URL
+    if "?" in url:
+        url = url.split("?")[0]
+    # Remove trailing slashes
+    url = url.rstrip("/")
+    logger.info(f"🧹 Cleaned URL: {url}")
+    return url
+
+
 def convert_song_link(url):
     """Convert song link using Odesli API"""
     try:
+        # Clean the URL first
+        url = clean_music_url(url)
+        
         logger.info(f"🔄 Converting: {url}")
         response = requests.get(
             ODESLI_API,
@@ -37,10 +52,12 @@ def convert_song_link(url):
         )
         
         logger.info(f"Status: {response.status_code}")
+        logger.debug(f"Response: {response.text}")
         
         if response.status_code == 200:
             data = response.json()
             link_by_platform = data.get("linksByPlatform", {})
+            logger.debug(f"Available platforms: {list(link_by_platform.keys())}")
             
             if "spotify.com" in url and "appleMusic" in link_by_platform:
                 result = link_by_platform["appleMusic"]["url"]
@@ -52,7 +69,7 @@ def convert_song_link(url):
                 logger.info(f"✅ Apple Music → Spotify")
                 return result, "Spotify"
         
-        logger.warning(f"❌ No conversion available")
+        logger.warning(f"❌ No conversion available or API error")
         return None, None
         
     except Exception as e:
@@ -76,10 +93,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await update.message.reply_text("🎵 Send me a Spotify or Apple Music link!")
             return
         
+        await update.message.reply_text("⏳ Converting...")
         converted_url, platform = convert_song_link(text)
         
         if not converted_url:
-            await update.message.reply_text("❌ Couldn't convert this link. Make sure it's valid.")
+            await update.message.reply_text(
+                "❌ Couldn't convert this link.\n\n"
+                "Make sure:\n"
+                "✅ It's a valid Spotify or Apple Music link\n"
+                "✅ The song exists on both platforms\n"
+                "✅ Try a different song"
+            )
         else:
             target = "Apple Music" if is_spotify else "Spotify"
             await update.message.reply_text(
