@@ -3,6 +3,7 @@ import logging
 import sys
 import json
 import re
+from urllib.parse import parse_qs, urlparse
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
@@ -33,6 +34,9 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_BOT_TOKEN:
     logger.error("❌ TELEGRAM_BOT_TOKEN not set!")
     raise ValueError("TELEGRAM_BOT_TOKEN required")
+SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
+SPOTIFY_API_URL = "https://api.spotify.com/v1"
+ITUNES_API_URL = "https://itunes.apple.com"
 
 logger.info("✅ Token loaded")
 
@@ -192,6 +196,123 @@ def extract_music_url(text: str) -> Optional[str]:
     """Extract a URL from text that may also mention the bot."""
     match = MUSIC_URL_RE.search(text)
     return match.group(0).rstrip(".,!?;:)]}") if match else None
+class MusicCatalogClient:
+    """Convert links using Spotify's API and Apple's public iTunes catalog."""
+
+    def __init__(self, timeout: int = TIMEOUT):
+        self.timeout = timeout
+        self.session: Optional[aiohttp.ClientSession] = None
+        self.spotify_token: Optional[str] = None
+
+    async def __aenter__(self):
+        self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout))
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.session:
+            await self.session.close()
+
+    async def _json(self, method: str, url: str, **kwargs) -> dict:
+        if not self.session:
+            raise RuntimeError("Session not initialized")
+        async with self.session.request(method, url, **kwargs) as response:
+            if response.status >= 400:
+                body = await response.text()
+                raise RuntimeError(f"Catalog request failed ({response.status}): {body[:200]}")
+            return await response.json()
+
+    async def _get_spotify_token(self) -> str:
+        if self.spotify_token:
+            return self.spotify_token
+        client_id = os.getenv("SPOTIFY_CLIENT_ID")
+        client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
+        if not client_id or not client_secret:
+            raise RuntimeError("Missing SPOTIFY_CLIENT_ID or SPOTIFY_CLIENT_SECRET")
+        data = await self._json(
+            "POST", SPOTIFY_TOKEN_URL, data={"grant_type": "client_credentials"},
+            auth=aiohttp.BasicAuth(client_id, client_secret),
+        )
+        self.spotify_token = data["access_token"]
+        return self.spotify_token
+
+    async def _spotify_request(self, path: str, params: dict | None = None) -> dict:
+        token = await self._get_spotify_token()
+        return await self._json(
+            "GET", f"{SPOTIFY_API_URL}{path}", params=params,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    @staticmethod
+    def _spotify_track_id(url: str) -> Optional[str]:
+        match = re.search(r"spotify\.com/track/([A-Za-z0-9]+)", url)
+        return match.group(1) if match else None
+
+    @staticmethod
+    def _apple_track_id(url: str) -> Optional[str]:
+        parsed = urlparse(url)
+        query_id = parse_qs(parsed.query).get("i", [None])[0]
+        if query_id and query_id.isdigit():
+            return query_id
+        for part in reversed(parsed.path.split("/")):
+            if part.isdigit():
+                return part
+        return None
+
+    @staticmethod
+    def _normalize(value: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", value.lower())
+
+    async def _itunes_search(self, title: str, artist: str) -> Optional[str]:
+        data = await self._json(
+            "GET", f"{ITUNES_API_URL}/search",
+            params={"term": f"{artist} {title}", "country": os.getenv("ITUNES_COUNTRY", "us"),
+                    "media": "music", "entity": "song", "limit": 10},
+        )
+        title_key, artist_key = self._normalize(title), self._normalize(artist)
+        best_result, best_score = None, -1
+        for result in data.get("results", []):
+            candidate_title = self._normalize(result.get("trackName", ""))
+            candidate_artist = self._normalize(result.get("artistName", ""))
+            score = 0
+            if candidate_title == title_key:
+                score += 4
+            elif title_key in candidate_title or candidate_title in title_key:
+                score += 2
+            if candidate_artist == artist_key:
+                score += 3
+            elif artist_key in candidate_artist or candidate_artist in artist_key:
+                score += 1
+            if score > best_score:
+                best_result, best_score = result, score
+        return best_result.get("trackViewUrl") if best_result and best_score >= 4 else None
+
+    async def _itunes_lookup(self, track_id: str) -> Optional[dict]:
+        data = await self._json(
+            "GET", f"{ITUNES_API_URL}/lookup",
+            params={"id": track_id, "country": os.getenv("ITUNES_COUNTRY", "us")},
+        )
+        return next((item for item in data.get("results", []) if item.get("kind") == "song"), None)
+
+    async def _spotify_search(self, title: str, artist: str) -> Optional[str]:
+        data = await self._spotify_request(
+            "/search", {"q": f'track:"{title}" artist:"{artist}"', "type": "track", "limit": 5},
+        )
+        tracks = data.get("tracks", {}).get("items", [])
+        return tracks[0].get("external_urls", {}).get("spotify") if tracks else None
+
+    async def convert(self, url: str) -> Tuple[Optional[str], Optional[str]]:
+        spotify_id = self._spotify_track_id(url)
+        if spotify_id:
+            track = await self._spotify_request(f"/tracks/{spotify_id}")
+            artist = ", ".join(item["name"] for item in track.get("artists", []))
+            return await self._itunes_search(track["name"], artist), "Apple Music"
+        apple_id = self._apple_track_id(url)
+        if apple_id:
+            track = await self._itunes_lookup(apple_id)
+            if not track:
+                return None, None
+            return await self._spotify_search(track["trackName"], track["artistName"]), "Spotify"
+        return None, None
 
 # ============ UTILITIES ============
 def clean_music_url(url: str) -> str:
@@ -223,7 +344,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("⏳ Converting...")
         
         url = clean_music_url(url)
-        async with OdesliClient() as client:
+        async with MusicCatalogClient() as client:
             converted_url, platform = await client.convert(url)
         
         if not converted_url:
@@ -270,7 +391,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
         
         url = clean_music_url(url)
-        async with OdesliClient() as client:
+        async with MusicCatalogClient() as client:
             converted_url, platform = await client.convert(url)
         
         if not converted_url:

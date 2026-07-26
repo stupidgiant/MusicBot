@@ -7,7 +7,7 @@ A simple Telegram bot that converts Spotify links to Apple Music and vice versa 
 - **Inline Query Support**: Type `@bot_username spotify_link` or `@bot_username apple_music_link` in any chat
 - **Bidirectional Conversion**: Spotify ↔ Apple Music
 - **24/7 Uptime**: Runs on Railway
-- **Simple & Fast**: Uses Odesli API for instant conversions
+- **Independent lookup**: Uses Spotify metadata and Apple's public iTunes catalog API
 
 ## Setup
 
@@ -35,11 +35,13 @@ A simple Telegram bot that converts Spotify links to Apple Music and vice versa 
    cp .env.example .env
    ```
 
-5. **Add your Telegram bot token**
+5. **Add your bot credentials**
    - Create a bot with [@BotFather](https://t.me/BotFather) on Telegram
    - Copy the token and paste it in `.env`:
    ```
    TELEGRAM_BOT_TOKEN=your_token_here
+   SPOTIFY_CLIENT_ID=your_spotify_client_id
+   SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
    ```
 
 6. **Run the bot locally**
@@ -63,7 +65,9 @@ A simple Telegram bot that converts Spotify links to Apple Music and vice versa 
 
 3. **Add Environment Variables**
    - Go to the project settings
-   - Add variable: `TELEGRAM_BOT_TOKEN` = your bot token from @BotFather
+   - Add `TELEGRAM_BOT_TOKEN` = your bot token from @BotFather
+   - Add `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` from your Spotify Web API app
+   - No Apple developer account or Apple API credentials are required
 
 4. **Deploy**
    - Railway will automatically build and deploy when you push to GitHub
@@ -86,7 +90,7 @@ A simple Telegram bot that converts Spotify links to Apple Music and vice versa 
 
 - **Python 3.11**
 - **python-telegram-bot**: Telegram bot framework
-- **Odesli API**: Cross-platform song link conversion
+- **Spotify Web API + Apple iTunes Search API**: Cross-platform song matching
 - **Railway**: Hosting
 
 ## File Structure
@@ -110,7 +114,7 @@ MusicBot/
 
 **Link conversion failing?**
 - Make sure URL is a valid Spotify or Apple Music link
-- Odesli API might have rate limits (free tier is generous)
+- Verify `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` are set in Railway
 
 ## License
 
