@@ -219,7 +219,7 @@ class MusicCatalogClient:
             if response.status >= 400:
                 body = await response.text()
                 raise RuntimeError(f"Catalog request failed ({response.status}): {body[:200]}")
-            return await response.json()
+            return await response.json(content_type=None)
 
     async def _get_spotify_token(self) -> str:
         if self.spotify_token:
