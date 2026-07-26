@@ -125,6 +125,16 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("✅ Bot is working!")
 
 
+async def post_init(app: Application) -> None:
+    """Delete webhook on startup"""
+    logger.info("🧹 Cleaning up old webhook...")
+    try:
+        await app.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("✅ Webhook deleted, polling mode ready")
+    except Exception as e:
+        logger.error(f"Error deleting webhook: {e}")
+
+
 def main() -> None:
     """Start the bot"""
     logger.info("🚀 Starting bot with polling...")
@@ -134,6 +144,8 @@ def main() -> None:
     app.add_handler(InlineQueryHandler(inline_query))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("test", test))
+    
+    app.post_init = post_init
     
     logger.info("✅ Handlers registered")
     logger.info("🎵 Bot polling...")
